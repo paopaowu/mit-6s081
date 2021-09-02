@@ -22,7 +22,9 @@ grep(char *pattern, int fd)
       *q = 0;
       if(match(pattern, p)){
         *q = '\n';
+        
         write(1, p, q+1 - p);
+
       }
       p = q+1;
     }
@@ -55,6 +57,8 @@ main(int argc, char *argv[])
       printf("grep: cannot open %s\n", argv[i]);
       exit(1);
     }
+    
+    printf("grep: open %s\n",argv[i]);
     grep(pattern, fd);
     close(fd);
   }
