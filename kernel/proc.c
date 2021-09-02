@@ -84,7 +84,21 @@ allocpid() {
 
   return pid;
 }
-
+uint64
+proc_num(void){
+  uint64 count=0;
+  struct proc *p;
+  for(p = proc; p < &proc[NPROC]; p++) {
+    
+    if(p->state != UNUSED) {
+      count++;        
+    }
+    
+  }
+  printf("proc:count:%d\n",count);
+  return count;
+  
+}
 // Look in the process table for an UNUSED proc.
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
@@ -282,7 +296,7 @@ fork(void)
 
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
-
+  np->tracemask=p->tracemask;
   // increment reference counts on open file descriptors.
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
