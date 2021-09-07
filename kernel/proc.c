@@ -15,6 +15,8 @@ struct proc *initproc;
 int nextpid = 1;
 struct spinlock pid_lock;
 
+extern char etext[];  // kernel.ld sets this to end of kernel code.
+
 extern void forkret(void);
 static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
@@ -31,17 +33,8 @@ procinit(void)
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
 
-      // Allocate a page for the process's kernel stack.
-      // Map it high in memory, followed by an invalid
-      // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
   }
-  kvminithart();
+  //kvminithart();
 }
 
 // Must be called with interrupts disabled,
@@ -76,10 +69,11 @@ myproc(void) {
 int
 allocpid() {
   int pid;
-  
+  //printf("------------allcopid------------\n");
   acquire(&pid_lock);
   pid = nextpid;
   nextpid = nextpid + 1;
+  //printf("------------allcopid%d------------\n",pid);
   release(&pid_lock);
 
   return pid;
@@ -120,7 +114,22 @@ found:
     release(&p->lock);
     return 0;
   }
+  //
+  p->kernelpagetable =  kvminitforproc();
+  if(p->kernelpagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  char *pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK((int) (p - proc));
+  kvmmapforproc(p->kernelpagetable,va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+  
 
+  
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -141,6 +150,9 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if(p->kernelpagetable)
+    proc_freekernelpagetable(p->kernelpagetable, p->kstack,p->sz);
+  p->kernelpagetable=0;
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -190,11 +202,33 @@ proc_pagetable(struct proc *p)
 void
 proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
+  //printf("proc_freepagetableTRAMPOLINE\n");
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+  //printf("proc_freepagetableTRAPFRAME\n");
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
 }
-
+void
+proc_freekernelpagetable(pagetable_t pagetable, uint64 va, uint64 sz)
+{
+  
+  //printf("proc_freekernelpagetable\n");
+  uvmunmap(pagetable, UART0, 1, 0);
+  //printf("proc_freekernelpagetable1\n");
+  uvmunmap(pagetable, VIRTIO0, 1, 0);
+  //printf("proc_freekernelpagetable2\n");
+  //uvmunmap(pagetable, CLINT, 0x10000/PGSIZE, 0);
+  //printf("proc_freekernelpagetable3\n");
+  uvmunmap(pagetable, PLIC, 0x400000/PGSIZE, 0);
+  //printf("proc_freekernelpagetable4\n");
+  uvmunmap(pagetable, KERNBASE, ((uint64)etext-KERNBASE)/PGSIZE, 0);
+  //printf("proc_freekernelpagetable5\n");
+  uvmunmap(pagetable, (uint64)etext, (PHYSTOP-(uint64)etext)/PGSIZE, 0);
+  //printf("proc_freekernelpagetable6\n");
+  uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+  uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 0);
+  uvmfree2(pagetable, va,1);
+}
 // a user program that calls exec("/init")
 // od -t xC initcode
 uchar initcode[] = {
@@ -211,8 +245,11 @@ uchar initcode[] = {
 void
 userinit(void)
 {
+  
+  //printf("------------userinit------------\n");
   struct proc *p;
-
+  pte_t *pte;
+  pte_t *kernel_pte;
   p = allocproc();
   initproc = p;
   
@@ -220,7 +257,14 @@ userinit(void)
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
-
+  
+  //printf("------------复制页表------------\n");
+  pte=walk(p->pagetable,0,0);
+  kernel_pte=walk(p->kernelpagetable,0,1);
+  *kernel_pte=(*pte)& ~PTE_U;
+  
+  //printf("------------复制页表成功------------\n");
+  
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -229,7 +273,7 @@ userinit(void)
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
-
+  //printf("------------userinit_退出------------\n");
   release(&p->lock);
 }
 
@@ -258,6 +302,7 @@ growproc(int n)
 int
 fork(void)
 {
+  //printf("------------fork------------\n");
   int i, pid;
   struct proc *np;
   struct proc *p = myproc();
@@ -273,6 +318,17 @@ fork(void)
     release(&np->lock);
     return -1;
   }
+  
+  //printf("------------复制页表------------\n");
+  pte_t *pte;
+  pte_t *kernel_pte;
+  
+  for(int j=0;j<p->sz;j+=PGSIZE){
+  pte=walk(np->pagetable,j,0);
+  kernel_pte=walk(np->kernelpagetable,j,1);
+  *kernel_pte=(*pte)& ~PTE_U;
+  }
+  
   np->sz = p->sz;
 
   np->parent = p;
@@ -458,7 +514,7 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
-  
+  //printf("------------scheduler------------\n");
   c->proc = 0;
   for(;;){
     // Avoid deadlock by ensuring that devices can interrupt.
@@ -473,12 +529,14 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        w_satp(MAKE_SATP(p->kernelpagetable));
+        sfence_vma();
         swtch(&c->context, &p->context);
 
+        kvminithart();
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
-
         found = 1;
       }
       release(&p->lock);

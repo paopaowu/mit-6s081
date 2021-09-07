@@ -43,12 +43,32 @@ sys_sbrk(void)
 {
   int addr;
   int n;
-
+  struct proc *p=myproc();
   if(argint(0, &n) < 0)
     return -1;
-  addr = myproc()->sz;
+  addr = p->sz;
   if(growproc(n) < 0)
     return -1;
+  
+  if(addr+n>=PLIC){
+    return -1;
+  }
+  if(n>0){
+    pte_t *pte;
+    pte_t *kernel_pte;
+  
+    for(int j=addr;j<addr+n;j+=PGSIZE){    
+      pte=walk(p->pagetable,j,0);
+      kernel_pte=walk(p->kernelpagetable,j,1);
+      *kernel_pte=(*pte)& ~PTE_U;
+    }
+  }
+  else{
+    
+    for(uint64 j=addr-PGSIZE;j>=addr+n;j-=PGSIZE){    
+        uvmunmap(p->kernelpagetable,j,1,0);
+    }
+  }
   return addr;
 }
 
